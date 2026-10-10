@@ -1,0 +1,91 @@
+name: Release
+
+# Push a tag such as v0.1.0 (matching the version in Cargo.toml) to build a draft release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned toolchain and the ARM64 target
+        run: |
+          rustup toolchain install
+          rustup target add aarch64-pc-windows-msvc
+
+      - name: Check that the tag matches the crate version
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"$').Matches[0].Groups[1].Value
+          if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME does not match Cargo.toml version $version" }
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Build x64 and ARM64
+        shell: pwsh
+        run: |
+          # Replace machine paths in panic locations with neutral prefixes.
+          $env:RUSTFLAGS = "-C target-feature=+crt-static " +
+            "--remap-path-prefix=$env:GITHUB_WORKSPACE=. " +
+            "--remap-path-prefix=$env:USERPROFILE\.cargo=cargo " +
+            "--remap-path-prefix=$env:USERPROFILE\.rustup=rustup"
+          cargo build --release --locked --target x86_64-pc-windows-msvc
+          cargo build --release --locked --target aarch64-pc-windows-msvc
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME
+          New-Item -ItemType Directory -Force dist | Out-Null
+          foreach ($arch in @(@{ name = "x64"; target = "x86_64-pc-windows-msvc" }, @{ name = "arm64"; target = "aarch64-pc-windows-msvc" })) {
+            $stage = "stage-$($arch.name)"
+            New-Item -ItemType Directory -Force $stage | Out-Null
+            Copy-Item "target\$($arch.target)\release\CapsLangChange.exe" "$stage\CapsLangChange.exe"
+            Copy-Item README.md, LICENSE, CHANGELOG.md $stage
+            Compress-Archive -Path "$stage\*" -DestinationPath "dist\CapsLangChange-$version-$($arch.name).zip"
+            Copy-Item "$stage\CapsLangChange.exe" "dist\CapsLangChange-$version-$($arch.name).exe"
+          }
+          Get-ChildItem dist -File | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content -Encoding ascii dist\SHA256SUMS.txt
+          Get-Content dist\SHA256SUMS.txt
+
+      - name: Check binaries for machine paths
+        shell: pwsh
+        run: |
+          foreach ($exe in Get-ChildItem dist\*.exe) {
+            $text = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($exe.FullName))
+            foreach ($needle in @("runneradmin", "\Users\", $env:GITHUB_WORKSPACE)) {
+              if ($text.Contains($needle)) { throw "$($exe.Name) contains '$needle'" }
+            }
+          }
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.exe
+            dist/*.zip
+
+      - name: Create draft release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          $files = (Get-ChildItem dist -File).FullName
+          gh release create $env:GITHUB_REF_NAME @files --draft --title "CapsLangChange $env:GITHUB_REF_NAME" --notes-file CHANGELOG.md
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }

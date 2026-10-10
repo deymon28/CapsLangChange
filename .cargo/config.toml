@@ -1,0 +1,4 @@
+# Link the C runtime statically so the executable does not need the Visual C++ redistributable.
+# Note: a RUSTFLAGS environment variable replaces this setting (the release workflow sets both).
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
