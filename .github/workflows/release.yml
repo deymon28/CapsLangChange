@@ -1,6 +1,6 @@
 name: Release
 
-# Push a tag such as v0.1.0 (matching the version in Cargo.toml) to build a draft release.
+# Push a tag such as v0.1.0 (matching the version in Cargo.toml) to build and publish a release.
 on:
   push:
     tags: ["v*"]
@@ -80,12 +80,12 @@ jobs:
             dist/*.exe
             dist/*.zip
 
-      - name: Create draft release
+      - name: Publish release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           $files = (Get-ChildItem dist -File).FullName
-          gh release create $env:GITHUB_REF_NAME @files --draft --title "CapsLangChange $env:GITHUB_REF_NAME" --notes-file CHANGELOG.md
+          gh release create $env:GITHUB_REF_NAME @files --title "CapsLangChange $env:GITHUB_REF_NAME" --notes-file CHANGELOG.md
           if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
