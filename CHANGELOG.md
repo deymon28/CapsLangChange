@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 
 - Modifier taps as triggers: `keys = "RCtrl"` (or `RAlt`, `LShift`, `Win`, ...) fires when the modifier is pressed and
   released on its own. A lone Win or Alt tap bound this way does not open the Start menu or a menu bar.
