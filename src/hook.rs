@@ -17,14 +17,15 @@ use windows_sys::Win32::System::Threading::{
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, GetLastInputInfo, LASTINPUTINFO};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, GetMessageW, HC_ACTION, HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, PM_NOREMOVE, PeekMessageW,
-    PostMessageW, PostThreadMessageW, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WM_APP,
-    WM_KEYDOWN, WM_QUIT, WM_SYSKEYDOWN, WM_TIMER,
+    PostMessageW, PostThreadMessageW, SetTimer, SetWindowsHookExW, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL,
+    WINDOWS_HOOK_ID, WM_APP, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_MOUSEHWHEEL, WM_MOUSEWHEEL, WM_QUIT,
+    WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN,
 };
 
 use crate::config::{Action, CapsState, Config, LayoutMode, Method};
 use crate::engine::{Decision, Engine, Origin};
 use crate::inject::{self, TAG_BASE, TAG_MASK, TAG_RESTORE};
-use crate::keys::{MODIFIER_VKS, ModPattern, Shortcut, modifier_bit};
+use crate::keys::MODIFIER_VKS;
 use crate::{layout, log, process};
 
 const MSG_CONFIG: u32 = WM_APP + 1;
@@ -41,9 +42,33 @@ const SILENCE_MS: u32 = 10 * 60_000;
 struct Ctx {
     engine: Engine,
     hook: HHOOK,
+    /// Low-level mouse hook, installed only while an active binding is triggered by a modifier tap: a mouse
+    /// click while a modifier is held (Ctrl+click, Shift+click) must not count as a tap.
+    mouse_hook: HHOOK,
     ui: HWND,
-    recording: bool,
     last_event_tick: u32,
+}
+
+impl Ctx {
+    /// Installs or removes the mouse hook to match the configuration.
+    fn update_mouse_hook(&mut self) {
+        let config = self.engine.config();
+        let wanted = config.enabled && config.has_taps();
+        if wanted && self.mouse_hook.is_null() {
+            self.mouse_hook = install(WH_MOUSE_LL, mouse_proc);
+            if self.mouse_hook.is_null() {
+                log::warning!(
+                    "hook",
+                    "installing the mouse hook failed, mouse clicks do not cancel modifier taps: {}",
+                    std::io::Error::last_os_error()
+                );
+            }
+        } else if !wanted && !self.mouse_hook.is_null() {
+            // SAFETY: the hook handle belongs to this thread.
+            unsafe { UnhookWindowsHookEx(self.mouse_hook) };
+            self.mouse_hook = std::ptr::null_mut();
+        }
+    }
 }
 
 thread_local! {
@@ -111,9 +136,11 @@ impl Drop for HookHandle {
     }
 }
 
-fn install() -> HHOOK {
+type HookProc = unsafe extern "system" fn(i32, WPARAM, LPARAM) -> LRESULT;
+
+fn install(kind: WINDOWS_HOOK_ID, proc: HookProc) -> HHOOK {
     // SAFETY: the hook procedure is a static function of this module.
-    unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), GetModuleHandleW(std::ptr::null()), 0) }
+    unsafe { SetWindowsHookExW(kind, Some(proc), GetModuleHandleW(std::ptr::null()), 0) }
 }
 
 fn run(config: Arc<Config>, ui: HWND, ready: mpsc::Sender<Result<u32, String>>) {
@@ -127,13 +154,16 @@ fn run(config: Arc<Config>, ui: HWND, ready: mpsc::Sender<Result<u32, String>>) 
     layout::warm_cache();
     let mut engine = Engine::new(config);
     engine.set_physical(read_held());
-    let hook = install();
+    let hook = install(WH_KEYBOARD_LL, hook_proc);
     if hook.is_null() {
         let _ = ready.send(Err(format!("SetWindowsHookExW failed: {}", std::io::Error::last_os_error())));
         return;
     }
     CTX.with(|c| {
-        *c.borrow_mut() = Some(Ctx { engine, hook, ui, recording: false, last_event_tick: unsafe { GetTickCount() } })
+        let mut ctx =
+            Ctx { engine, hook, mouse_hook: std::ptr::null_mut(), ui, last_event_tick: unsafe { GetTickCount() } };
+        ctx.update_mouse_hook();
+        *c.borrow_mut() = Some(ctx);
     });
     // SAFETY: plain call.
     let _ = ready.send(Ok(unsafe { GetCurrentThreadId() }));
@@ -153,9 +183,12 @@ fn run(config: Arc<Config>, ui: HWND, ready: mpsc::Sender<Result<u32, String>>) 
             MSG_CONFIG => {
                 // SAFETY: the box was created by `HookHandle::set_config` and is consumed exactly once.
                 let config = unsafe { Box::from_raw(msg.lParam as *mut Arc<Config>) };
-                with_ctx(|ctx| ctx.engine.set_config(*config));
+                with_ctx(|ctx| {
+                    ctx.engine.set_config(*config);
+                    ctx.update_mouse_hook();
+                });
             }
-            MSG_RECORD => with_ctx(|ctx| ctx.recording = msg.wParam != 0),
+            MSG_RECORD => with_ctx(|ctx| ctx.engine.set_recording(msg.wParam != 0)),
             MSG_RESYNC => reinstall("session change"),
             WM_TIMER => watchdog(),
             _ => {}
@@ -164,8 +197,13 @@ fn run(config: Arc<Config>, ui: HWND, ready: mpsc::Sender<Result<u32, String>>) 
 
     CTX.with(|c| {
         if let Some(ctx) = c.borrow_mut().take() {
-            // SAFETY: the hook handle belongs to this thread.
-            unsafe { UnhookWindowsHookEx(ctx.hook) };
+            // SAFETY: the hook handles belong to this thread.
+            unsafe {
+                UnhookWindowsHookEx(ctx.hook);
+                if !ctx.mouse_hook.is_null() {
+                    UnhookWindowsHookEx(ctx.mouse_hook);
+                }
+            }
         }
     });
     log::info!("hook", "keyboard hook removed");
@@ -185,13 +223,20 @@ fn reinstall(reason: &str) {
     with_ctx(|ctx| {
         // SAFETY: the old handle belongs to this thread; a failed unhook (already removed) is harmless.
         unsafe { UnhookWindowsHookEx(ctx.hook) };
-        let hook = install();
+        let hook = install(WH_KEYBOARD_LL, hook_proc);
         if hook.is_null() {
             log::error!("hook", "re-installing the hook failed ({reason}): {}", std::io::Error::last_os_error());
         } else {
             ctx.hook = hook;
             log::info!("hook", "hook re-installed ({reason})");
         }
+        if !ctx.mouse_hook.is_null() {
+            // SAFETY: as above.
+            unsafe { UnhookWindowsHookEx(ctx.mouse_hook) };
+            ctx.mouse_hook = std::ptr::null_mut();
+        }
+        ctx.update_mouse_hook();
+        ctx.engine.cancel_tap();
         ctx.engine.set_physical(read_held());
         // SAFETY: plain call.
         ctx.last_event_tick = unsafe { GetTickCount() };
@@ -255,39 +300,62 @@ fn handle(kb: &KBDLLHOOKSTRUCT, wparam: WPARAM) -> bool {
 
         if origin == Origin::External {
             ctx.last_event_tick = kb.time;
-            if ctx.recording && down && modifier_bit(vk).is_none() {
-                ctx.recording = false;
-                ctx.engine.mark_swallowed(vk);
-                let sc = Shortcut { mods: ModPattern::from_held(read_held()), vk };
-                let text = Box::into_raw(Box::new(sc.to_string()));
+        }
+
+        let decision =
+            ctx.engine.on_key(vk, kb.scanCode, down, kb.time, origin, read_held, process::foreground_app_cached);
+        let (mask, run, held, swallow) = match decision {
+            Decision::Pass => return false,
+            Decision::Swallow { mask, run, held } => (mask, run, held, true),
+            // A Win or Alt tap: the mask must reach the system before the key-up, so replace the key-up.
+            Decision::Tap { mask: true, run, held } => {
+                inject::mask_then_release(vk);
+                (false, run, held, true)
+            }
+            Decision::Tap { mask: false, run, held } => (false, run, held, false),
+            Decision::Recorded { shortcut, swallow, mask } => {
+                if shortcut.is_tap() {
+                    if swallow {
+                        inject::mask_then_release(vk);
+                    }
+                } else if mask {
+                    inject::mask();
+                }
+                let text = Box::into_raw(Box::new(shortcut.to_string()));
                 // SAFETY: the UI thread takes ownership on success; reclaimed on failure.
                 unsafe {
                     if PostMessageW(ctx.ui, MSG_RECORDED, 0, text as LPARAM) == 0 {
                         drop(Box::from_raw(text));
                     }
                 }
-                return true;
+                return swallow;
+            }
+        };
+        if mask {
+            inject::mask();
+        }
+        if let Some(index) = run {
+            let config = Arc::clone(ctx.engine.config());
+            if let Some(binding) = config.bindings.get(index) {
+                log::debug!("hook", "binding {} fired: {}", index + 1, binding.label());
+                execute(&binding.action, held);
             }
         }
-
-        let decision = ctx.engine.on_key(vk, kb.scanCode, down, origin, read_held, process::foreground_app_cached);
-        match decision {
-            Decision::Pass => false,
-            Decision::Swallow { mask, run, held } => {
-                if mask {
-                    inject::mask();
-                }
-                if let Some(index) = run {
-                    let config = Arc::clone(ctx.engine.config());
-                    if let Some(binding) = config.bindings.get(index) {
-                        log::debug!("hook", "binding {} fired: {}", index + 1, binding.label());
-                        execute(&binding.action, held);
-                    }
-                }
-                true
-            }
-        }
+        swallow
     })
+}
+
+unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == HC_ACTION as i32
+        && matches!(
+            wparam as u32,
+            WM_LBUTTONDOWN | WM_RBUTTONDOWN | WM_MBUTTONDOWN | WM_XBUTTONDOWN | WM_MOUSEWHEEL | WM_MOUSEHWHEEL
+        )
+    {
+        with_ctx(|ctx| ctx.engine.cancel_tap());
+    }
+    // SAFETY: forwarding the unchanged arguments.
+    unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
 }
 
 fn execute(action: &Action, held: u8) {

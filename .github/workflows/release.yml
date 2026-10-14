@@ -31,6 +31,19 @@ jobs:
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"$').Matches[0].Groups[1].Value
           if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME does not match Cargo.toml version $version" }
 
+      - name: Extract the release notes from the changelog
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $notes = @(); $inside = $false
+          foreach ($line in Get-Content CHANGELOG.md) {
+            if ($line -match '^## (.+)$') { $inside = ($Matches[1].Trim() -eq $version); continue }
+            if ($inside) { $notes += $line }
+          }
+          $text = ($notes -join "`n").Trim()
+          if (-not $text) { throw "CHANGELOG.md has no '## $version' section" }
+          Set-Content -Encoding utf8 RELEASE_NOTES.md $text
+
       - name: Tests
         run: cargo test --locked
 
@@ -87,5 +100,5 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           $files = (Get-ChildItem dist -File).FullName
-          gh release create $env:GITHUB_REF_NAME @files --title "CapsLangChange $env:GITHUB_REF_NAME" --notes-file CHANGELOG.md
+          gh release create $env:GITHUB_REF_NAME @files --title "CapsLangChange $env:GITHUB_REF_NAME" --notes-file RELEASE_NOTES.md
           if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }

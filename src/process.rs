@@ -50,6 +50,19 @@ pub fn foreground_app_cached() -> Option<AppInfo> {
     app
 }
 
+/// Whether the window belongs to this process.
+pub fn is_own_window(hwnd: HWND) -> bool {
+    if hwnd.is_null() {
+        return false;
+    }
+    let mut pid = 0u32;
+    // SAFETY: valid out-pointer; plain query.
+    unsafe {
+        GetWindowThreadProcessId(hwnd, &mut pid);
+        pid == GetCurrentProcessId()
+    }
+}
+
 pub fn app_for_window(hwnd: HWND) -> Option<AppInfo> {
     if hwnd.is_null() {
         return None;

@@ -163,7 +163,7 @@ fn real_main() -> i32 {
     if created {
         log::info!("main", "created the default configuration at {}", config_path.display());
     }
-    let config = match config::parse(&text) {
+    let config = match layout::parse_config(&text) {
         Ok(c) => c,
         Err(errors) => {
             for e in &errors {
@@ -208,7 +208,7 @@ fn check_config(path: &std::path::Path) -> i32 {
             return 1;
         }
     };
-    match config::parse(&text) {
+    match layout::parse_config(&text) {
         Ok(c) => {
             let mut msg = format!(
                 "{}: valid ({} bindings, {} excluded programs)",

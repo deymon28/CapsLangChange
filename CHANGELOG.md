@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Modifier taps as triggers: `keys = "RCtrl"` (or `RAlt`, `LShift`, `Win`, ...) fires when the modifier is pressed and
+  released on its own. A lone Win or Alt tap bound this way does not open the Start menu or a menu bar.
+- The shortcut recorder also records modifier taps, no longer opens the Start menu or a menu bar after recording a Win
+  or Alt chord, and records AltGr chords as `Alt+...` instead of `Ctrl+Alt+...`.
+- `layout = "..."` without `mode` now switches to that layout (it was silently ignored).
+- New warnings: settings that have no effect for the action, unknown keys in inline program entries, layout ids that
+  are not installed.
+- More key names: browser and launch keys, `Clear`, `Help`, `Sleep` and IME keys.
+- The tray keeps the excluded-program state while its own menu or dialogs are open.
+- The hook is re-installed when returning to the session through fast user switching or Remote Desktop.
+- The warning about an executable inside the user profile no longer matches other profiles with the same prefix.
+- Release notes contain only the section of the released version.
+
 ## 0.1.0
 
 First release.

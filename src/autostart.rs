@@ -267,10 +267,15 @@ pub fn current_user_sid() -> Option<String> {
 
 /// True if the executable lives inside the user's profile, where unelevated programs can replace it.
 pub fn exe_in_user_profile(exe: &Path) -> bool {
-    let Some(profile) = std::env::var_os("USERPROFILE").map(PathBuf::from) else { return false };
-    let exe = exe.display().to_string().to_lowercase();
-    let profile = profile.display().to_string().to_lowercase();
-    !profile.is_empty() && exe.starts_with(&profile)
+    let Some(profile) = std::env::var_os("USERPROFILE") else { return false };
+    path_is_inside(exe, Path::new(&profile))
+}
+
+/// Case-insensitive, component-wise "`path` is inside `dir`" (`C:\Users\bob` does not contain `C:\Users\bobby`).
+fn path_is_inside(path: &Path, dir: &Path) -> bool {
+    let lower = |p: &Path| PathBuf::from(p.display().to_string().to_lowercase());
+    let dir = lower(dir);
+    dir.components().next().is_some() && lower(path).starts_with(&dir)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -342,6 +347,13 @@ mod tests {
         assert!(valid_sid("S-1-5-21-1004336348-1177238915-682003330-512"));
         assert!(!valid_sid("S-1-5-21\"><x"));
         assert!(!valid_sid("Administrator"));
+    }
+
+    #[test]
+    fn profile_containment_is_component_wise() {
+        assert!(path_is_inside(Path::new(r"C:\Users\Bob\Tools\a.exe"), Path::new(r"c:\users\bob")));
+        assert!(!path_is_inside(Path::new(r"C:\Users\Bobby\a.exe"), Path::new(r"C:\Users\Bob")));
+        assert!(!path_is_inside(Path::new(r"C:\Program Files\a.exe"), Path::new("")));
     }
 
     #[test]

@@ -86,7 +86,7 @@ action = "switch_layout" # what it does
 
 | Key | Meaning |
 | --- | --- |
-| `keys` | Modifiers and one key joined with `+`, for example `CapsLock`, `Ctrl+Alt+Shift+Space`, `RAlt+F1`. |
+| `keys` | Modifiers and one key joined with `+`, for example `CapsLock`, `Ctrl+Alt+Shift+Space`, `RAlt+F1`; or a single modifier such as `RCtrl` (see [Modifier taps](#modifier-taps)). |
 | `action` | `switch_layout`, `capslock`, `send_keys`, `block` or `passthrough` (see below). |
 | `name` | Optional label. |
 | `enabled` | `false` turns the binding off (also from the tray). |
@@ -102,7 +102,7 @@ then side-specific modifiers (`LCtrl`) win over generic ones (`Ctrl`), then the 
 
 | `action` | Extra keys | Effect |
 | --- | --- | --- |
-| `switch_layout` | `mode` = `"next"` (default), `"previous"` or `"set"`; `layout` = layout id for `set`; `cycle` = list of layout ids; `method` = `"win_space"` or `"message"` | Changes the keyboard layout. |
+| `switch_layout` | `mode` = `"next"` (default), `"previous"` or `"set"`; `layout` = layout id for `set` (`layout` alone implies `set`); `cycle` = list of layout ids; `method` = `"win_space"` or `"message"` | Changes the keyboard layout. |
 | `capslock` | `state` = `"toggle"` (default), `"on"` or `"off"` | Changes the real Caps Lock. |
 | `send_keys` | `send` = shortcut, for example `"Ctrl+C"` | Presses another shortcut instead. |
 | `block` | | Swallows the shortcut. |
@@ -130,10 +130,29 @@ Layout ids are shown under tray menu > **Installed layouts**: for example `00000
 | Numpad | `Numpad0`-`Numpad9`, `NumpadMultiply`, `NumpadAdd`, `NumpadSubtract`, `NumpadDecimal`, `NumpadDivide` |
 | Punctuation (US positions) | `Grave`, `Minus`, `Equals`, `LeftBracket`, `RightBracket`, `Backslash`, `Semicolon`, `Quote`, `Comma`, `Period`, `Slash`, `IntlBackslash` |
 | Media | `VolumeMute`, `VolumeDown`, `VolumeUp`, `MediaNext`, `MediaPrevious`, `MediaStop`, `MediaPlayPause` |
+| Browser and launch | `BrowserBack`, `BrowserForward`, `BrowserRefresh`, `BrowserStop`, `BrowserSearch`, `BrowserFavorites`, `BrowserHome`, `LaunchMail`, `LaunchMedia`, `LaunchApp1`, `LaunchApp2` |
+| Other | `Clear`, `Help`, `Sleep`, `Kana` / `Hangul`, `Kanji` / `Hanja`, `Convert`, `NonConvert` |
 | Anything else | `vk:0xNN` with the Windows virtual-key code |
 
-**Record a shortcut** in the tray produces the right text for you. Shortcuts need one non-modifier key; a modifier
-alone (for example a lone Right Alt) cannot be a trigger yet.
+**Record a shortcut** in the tray produces the right text for you, also for a modifier tap.
+
+#### Modifier taps
+
+A single modifier as `keys` (`RCtrl`, `RAlt`, `LShift`, `Win`, ...) fires when that key is pressed and released
+on its own, within half a second, with no other key or mouse button used meanwhile. The key itself still reaches
+Windows normally, so it keeps working as a modifier in shortcuts.
+
+```toml
+[[binding]]
+name = "Right Ctrl switches the layout"
+keys = "RCtrl"
+action = "switch_layout"
+```
+
+A lone Win or Alt tap that triggers a binding does not open the Start menu or a menu bar. This also makes
+`keys = "Win"` with `action = "block"` a way to stop the Start menu from opening on a lone Win press (for example only
+in some programs, with `apps_only`). While a tap binding exists, CapsLangChange also watches mouse clicks (only to
+cancel a pending tap; nothing is recorded).
 
 ### Excluded programs
 

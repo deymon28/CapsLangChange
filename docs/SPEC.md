@@ -1,7 +1,7 @@
 # CapsLangChange: technical specification
 
-Status: implemented in 0.1.0. Section 14 lists where the implementation refined this specification;
-`docs/ARCHITECTURE.md` describes the code as built.
+Status: implemented in 0.1.0; modifier taps added afterwards (see the changelog). Section 14 lists where the
+implementation refined this specification; `docs/ARCHITECTURE.md` describes the code as built.
 
 ## 1. Purpose
 
@@ -368,8 +368,14 @@ CapsLangChange/
 - The elevated-autostart warning checks whether the executable is inside the user profile (no ACL evaluation).
 - Autostart mode and one-time notices are remembered under `HKCU\Software\CapsLangChange`.
 - An autostart instance waits up to 15 seconds for the single-instance mutex (normal-to-elevated hand-over).
+- Modifier taps (from section 15): a single modifier as `keys` fires on release if it was pressed alone, released
+  within 500 ms, and no other key, mouse button or wheel was used meanwhile. The modifier is never swallowed on
+  key-down; for Win and Alt the key-up is replaced by the mask key plus an injected key-up. A `WH_MOUSE_LL` hook exists
+  only while such a binding is configured. The recorder also records taps and masks recorded Win/Alt chords.
+- `layout` without `mode` implies `mode = "set"`. Settings without effect for the action, and layout ids that are
+  not installed, produce warnings.
 
 ## 15. Possible later additions
 
-Modifier-only taps (for example a lone `RAlt` as a trigger); a native settings dialog; "strict mode"; automatic
+Modifier chords without a main key (for example `LShift+RShift`); a native settings dialog; "strict mode"; automatic
 fullscreen exclusion; mouse-button triggers; winget package; `run_program` action (only with a safer elevated design).

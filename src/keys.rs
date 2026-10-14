@@ -131,6 +131,25 @@ impl ModPattern {
         out
     }
 
+    /// Pattern requiring exactly the modifier of one `held` bit, on that side.
+    pub fn single(bit: u8) -> ModPattern {
+        let side = |l: u8, r: u8| {
+            if bit == l {
+                Side::Left
+            } else if bit == r {
+                Side::Right
+            } else {
+                Side::None
+            }
+        };
+        ModPattern {
+            ctrl: side(held::LCTRL, held::RCTRL),
+            alt: side(held::LALT, held::RALT),
+            shift: side(held::LSHIFT, held::RSHIFT),
+            win: side(held::LWIN, held::RWIN),
+        }
+    }
+
     /// Pattern describing exactly the given held bits, with generic sides where possible.
     pub fn from_held(held_bits: u8) -> ModPattern {
         let side = |l: u8, r: u8| match (held_bits & l != 0, held_bits & r != 0) {
@@ -146,11 +165,20 @@ impl ModPattern {
     }
 }
 
-/// A modifier pattern plus one main key.
+/// A modifier pattern plus one main key, or a tap of a single modifier (`vk == TAP`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Shortcut {
     pub mods: ModPattern,
     pub vk: u8,
+}
+
+/// `Shortcut::vk` of a modifier tap: the single modifier in `mods` is pressed and released alone.
+pub const TAP: u8 = 0;
+
+impl Shortcut {
+    pub fn is_tap(&self) -> bool {
+        self.vk == TAP
+    }
 }
 
 /// Named keys. The first name listed for a code is the canonical one used when formatting.
@@ -210,6 +238,26 @@ const NAMED_KEYS: &[(&str, u8)] = &[
     ("MediaPrevious", 0xB1),
     ("MediaStop", 0xB2),
     ("MediaPlayPause", 0xB3),
+    ("BrowserBack", 0xA6),
+    ("BrowserForward", 0xA7),
+    ("BrowserRefresh", 0xA8),
+    ("BrowserStop", 0xA9),
+    ("BrowserSearch", 0xAA),
+    ("BrowserFavorites", 0xAB),
+    ("BrowserHome", 0xAC),
+    ("LaunchMail", 0xB4),
+    ("LaunchMedia", 0xB5),
+    ("LaunchApp1", 0xB6),
+    ("LaunchApp2", 0xB7),
+    ("Clear", 0x0C),
+    ("Help", 0x2F),
+    ("Sleep", 0x5F),
+    ("Kana", 0x15),
+    ("Hangul", 0x15),
+    ("Kanji", 0x19),
+    ("Hanja", 0x19),
+    ("Convert", 0x1C),
+    ("NonConvert", 0x1D),
 ];
 
 enum Part {
@@ -292,7 +340,7 @@ pub fn key_name(vk: u8) -> String {
 }
 
 impl Shortcut {
-    /// Parses text such as `Ctrl+Alt+Shift+Space` or `CapsLock`.
+    /// Parses text such as `Ctrl+Alt+Shift+Space`, `CapsLock` or a lone modifier such as `RCtrl`.
     pub fn parse(text: &str) -> Result<Shortcut, String> {
         let text = text.trim();
         if text.is_empty() {
@@ -300,6 +348,7 @@ impl Shortcut {
         }
         let mut sides = [Side::None; 4];
         let mut key = None;
+        let mut modifiers = 0;
         for raw in text.split('+') {
             let raw = raw.trim();
             if raw.is_empty() {
@@ -311,6 +360,7 @@ impl Shortcut {
                         return Err(format!("'{text}': modifier '{raw}' given twice"));
                     }
                     sides[kind] = side;
+                    modifiers += 1;
                 }
                 Some(Part::Key(vk)) => {
                     if key.is_some() {
@@ -321,10 +371,14 @@ impl Shortcut {
                 None => return Err(format!("'{text}': unknown key '{raw}'")),
             }
         }
-        let vk = key.ok_or_else(|| {
-            format!("'{text}': a non-modifier key is required (modifier-only shortcuts are not supported)")
-        })?;
-        Ok(Shortcut { mods: ModPattern { ctrl: sides[0], alt: sides[1], shift: sides[2], win: sides[3] }, vk })
+        let mods = ModPattern { ctrl: sides[0], alt: sides[1], shift: sides[2], win: sides[3] };
+        match key {
+            Some(vk) => Ok(Shortcut { mods, vk }),
+            None if modifiers == 1 => Ok(Shortcut { mods, vk: TAP }),
+            None => Err(format!(
+                "'{text}': a non-modifier key is required (a modifier alone works only as a single key, e.g. RCtrl)"
+            )),
+        }
     }
 }
 
@@ -332,13 +386,25 @@ impl fmt::Display for Shortcut {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let parts =
             [(self.mods.ctrl, "Ctrl"), (self.mods.alt, "Alt"), (self.mods.shift, "Shift"), (self.mods.win, "Win")];
+        let mut first = true;
         for (side, name) in parts {
-            match side {
-                Side::None => {}
-                Side::Either => write!(f, "{name}+")?,
-                Side::Left => write!(f, "L{name}+")?,
-                Side::Right => write!(f, "R{name}+")?,
+            let prefix = match side {
+                Side::None => continue,
+                Side::Either => "",
+                Side::Left => "L",
+                Side::Right => "R",
+            };
+            if !first {
+                f.write_str("+")?;
             }
+            write!(f, "{prefix}{name}")?;
+            first = false;
+        }
+        if self.is_tap() {
+            return Ok(());
+        }
+        if !first {
+            f.write_str("+")?;
         }
         f.write_str(&key_name(self.vk))
     }
@@ -422,6 +488,26 @@ mod tests {
         assert!(!left.matches(held::RCTRL));
         assert!(!left.matches(held::LCTRL | held::RCTRL));
         assert_eq!(left.specificity(), 1);
+    }
+
+    #[test]
+    fn modifier_taps() {
+        let s = Shortcut::parse("rctrl").unwrap();
+        assert!(s.is_tap());
+        assert_eq!(s.mods.ctrl, Side::Right);
+        assert_eq!(s.to_string(), "RCtrl");
+        assert!(s.mods.matches(held::RCTRL));
+        assert!(!s.mods.matches(held::LCTRL));
+
+        let s = Shortcut::parse("Win").unwrap();
+        assert!(s.is_tap());
+        assert_eq!(s.to_string(), "Win");
+        assert!(s.mods.matches(held::LWIN) && s.mods.matches(held::RWIN));
+        assert_eq!(Shortcut::parse("AltGr").unwrap().to_string(), "RAlt");
+        assert!(!Shortcut::parse("Ctrl+A").unwrap().is_tap());
+
+        assert_eq!(ModPattern::single(held::RSHIFT), Shortcut::parse("RShift").unwrap().mods);
+        assert_eq!(ModPattern::single(held::LWIN), Shortcut::parse("LWin").unwrap().mods);
     }
 
     #[test]

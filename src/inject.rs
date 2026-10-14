@@ -69,6 +69,15 @@ pub fn mask() {
     send(&v);
 }
 
+/// Presses the mask key, then releases the modifier `vk`. Replaces the swallowed physical key-up of a lone
+/// Win or Alt tap, so the mask is processed before the release (no Start menu, no menu bar).
+pub fn mask_then_release(vk: u8) {
+    let mut v = Vec::with_capacity(3);
+    push_mask(&mut v);
+    v.push(key(vk, true, TAG_NORMAL));
+    send(&v);
+}
+
 /// Taps a shortcut while temporarily releasing the modifiers the user is holding (`held_bits`).
 pub fn shortcut(sc: &Shortcut, held_bits: u8) {
     let mut v = Vec::with_capacity(20);
@@ -80,8 +89,10 @@ pub fn shortcut(sc: &Shortcut, held_bits: u8) {
     for &vk in &mods {
         v.push(key(vk, false, TAG_NORMAL));
     }
-    v.push(key(sc.vk, false, TAG_NORMAL));
-    v.push(key(sc.vk, true, TAG_NORMAL));
+    if !sc.is_tap() {
+        v.push(key(sc.vk, false, TAG_NORMAL));
+        v.push(key(sc.vk, true, TAG_NORMAL));
+    }
     for &vk in mods.iter().rev() {
         v.push(key(vk, true, TAG_NORMAL));
     }

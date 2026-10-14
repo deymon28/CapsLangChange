@@ -97,7 +97,8 @@ struct App {
     config: Arc<Config>,
     icons: [HICON; 3],
     icon_state: usize,
-    fg_exe: Option<String>,
+    /// Last known foreground program other than this one.
+    fg_app: Option<config::AppInfo>,
     fg_excluded: bool,
     saved_caps: Option<bool>,
     msg_taskbar_created: u32,
@@ -213,7 +214,7 @@ pub fn run(paths: Paths, config_text: String, config: Arc<Config>, startup: Star
         config,
         icons: load_icons(),
         icon_state: ICON_ACTIVE,
-        fg_exe: None,
+        fg_app: None,
         fg_excluded: false,
         saved_caps: None,
         msg_taskbar_created,
@@ -339,7 +340,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     unsafe { KillTimer(hwnd, TIMER_RETRY) };
                     let done = with_app(|a| {
                         a.reload(false);
-                        a.update_foreground(process::foreground_app(), true);
+                        let app = a.current_foreground();
+                        a.update_foreground(app, true);
                     });
                     if done.is_none() {
                         retry_later(hwnd);
@@ -351,7 +353,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             0
         }
         WM_WTSSESSION_CHANGE => {
-            if wparam == WTS_SESSION_UNLOCK as usize {
+            // Unlock, or a return to this session through fast user switching or Remote Desktop.
+            if matches!(wparam as u32, WTS_SESSION_UNLOCK | WTS_CONSOLE_CONNECT | WTS_REMOTE_CONNECT) {
                 with_app(|a| a.hook.resync());
             }
             0
@@ -390,6 +393,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
 // Constants that windows-sys exposes under other features or names.
 const NIN_KEYSELECT: u32 = NIN_SELECT | 0x1; // NIN_SELECT | NINF_KEY
+const WTS_CONSOLE_CONNECT: u32 = 0x1;
+const WTS_REMOTE_CONNECT: u32 = 0x3;
 const WTS_SESSION_UNLOCK: u32 = 0x8;
 const PBT_APMRESUMEAUTOMATIC: u32 = 0x12;
 const WM_WTSSESSION_CHANGE: u32 = 0x02B1;
@@ -516,7 +521,7 @@ impl App {
     fn tooltip(&self) -> String {
         let state = match self.icon_state {
             ICON_PAUSED => "paused".to_string(),
-            ICON_EXCLUDED => format!("inactive in {}", self.fg_exe.as_deref().unwrap_or("this program")),
+            ICON_EXCLUDED => format!("inactive in {}", self.fg_app.as_ref().map_or("this program", |a| a.exe.as_str())),
             _ => "active".to_string(),
         };
         let admin = if self.elevated { " (administrator)" } else { "" };
@@ -596,6 +601,14 @@ impl App {
         autostart::refresh_run_value(&self.paths.exe);
     }
 
+    /// The foreground program. While this program's own window (tray menu, message box) is in front,
+    /// the last other program counts, as foreground events skip our own windows too.
+    fn current_foreground(&self) -> Option<config::AppInfo> {
+        // SAFETY: plain query.
+        let hwnd = unsafe { GetForegroundWindow() };
+        if process::is_own_window(hwnd) { self.fg_app.clone() } else { process::app_for_window(hwnd) }
+    }
+
     fn update_foreground(&mut self, app: Option<config::AppInfo>, allow_restore: bool) {
         let excluded = app.as_ref().is_some_and(|a| self.config.is_excluded(a));
         if excluded && !self.fg_excluded {
@@ -613,7 +626,7 @@ impl App {
             self.saved_caps = None;
         }
         self.fg_excluded = excluded;
-        self.fg_exe = app.map(|a| a.exe);
+        self.fg_app = app;
         self.refresh_icon();
     }
 
@@ -632,7 +645,7 @@ impl App {
             return;
         }
         self.config_text = text;
-        match config::parse(&self.config_text) {
+        match layout::parse_config(&self.config_text) {
             Ok(config) => {
                 for w in &config.warnings {
                     log::warning!("config", "{w}");
@@ -666,7 +679,7 @@ impl App {
     fn apply(&mut self, config: Arc<Config>) {
         self.config = Arc::clone(&config);
         self.hook.set_config(config);
-        let app = process::foreground_app();
+        let app = self.current_foreground();
         self.update_foreground(app, false);
     }
 
@@ -970,7 +983,7 @@ fn check_config() {
             return;
         }
     };
-    match config::parse(&text) {
+    match layout::parse_config(&text) {
         Ok(c) if c.warnings.is_empty() => {
             message_box(
                 hwnd,

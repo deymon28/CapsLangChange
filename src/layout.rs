@@ -14,7 +14,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_INPUTLANGCHANGEREQUEST,
 };
 
-use crate::config::LayoutMode;
+use crate::config::{self, Config, LayoutMode};
 use crate::log;
 use crate::util::{from_wide, wide};
 
@@ -37,6 +37,18 @@ pub fn installed() -> Vec<HKL> {
         list.truncate(got.max(0) as usize);
         list
     }
+}
+
+/// KLIDs of the installed layouts, in Windows order.
+pub fn installed_klids() -> Vec<u32> {
+    installed().into_iter().map(klid_of).collect()
+}
+
+/// Parses configuration text and warns about layout ids that are not installed.
+pub fn parse_config(text: &str) -> Result<Config, Vec<String>> {
+    let mut config = config::parse(text)?;
+    config.check_layouts(&installed_klids());
+    Ok(config)
 }
 
 /// Resolves the KLIDs of all installed layouts now, so the first switch inside the keyboard hook

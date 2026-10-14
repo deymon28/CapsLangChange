@@ -6,7 +6,7 @@ use std::path::Path;
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
 
-use crate::keys::Shortcut;
+use crate::keys::{Shortcut, TAP};
 
 pub const DEFAULT_CONFIG: &str = r#"# CapsLangChange configuration.
 # Edit and save: changes are applied automatically. Reference: README.md in the project repository.
@@ -48,6 +48,11 @@ action = "switch_layout"
 # keys = "RAlt+Space"
 # action = "switch_layout"
 # cycle = ["00000409", "00000419"]
+#
+# [[binding]]
+# name = "Right Ctrl alone switches the layout"
+# keys = "RCtrl"                 # a modifier pressed and released on its own
+# action = "switch_layout"
 #
 # [[binding]]
 # keys = "Ctrl+Q"
@@ -196,6 +201,15 @@ impl Binding {
         }
     }
 
+    /// How messages refer to this binding, e.g. `binding 2 ("English")`.
+    fn context(&self) -> String {
+        if self.name.is_empty() {
+            format!("binding {}", self.index + 1)
+        } else {
+            format!("binding {} (\"{}\")", self.index + 1, self.name)
+        }
+    }
+
     /// Whether the binding applies to the given foreground program (`None` = unknown program).
     pub fn scope_allows(&self, app: Option<&AppInfo>) -> bool {
         match app {
@@ -228,6 +242,34 @@ impl Config {
 
     pub fn is_excluded(&self, app: &AppInfo) -> bool {
         self.excludes.iter().any(|m| m.matches(app))
+    }
+
+    /// Whether an enabled binding is triggered by a lone modifier tap.
+    pub fn has_taps(&self) -> bool {
+        !self.by_vk[TAP as usize].is_empty()
+    }
+
+    /// Adds a warning for every layout id used in a binding that is not among the `installed` ones.
+    /// Does nothing if the installed list is unknown (empty).
+    pub fn check_layouts(&mut self, installed: &[u32]) {
+        if installed.is_empty() {
+            return;
+        }
+        for b in &self.bindings {
+            let Action::SwitchLayout { mode, cycle, .. } = &b.action else { continue };
+            let set = match mode {
+                LayoutMode::Set(klid) => Some(*klid),
+                _ => None,
+            };
+            for klid in set.iter().chain(cycle) {
+                if !installed.contains(klid) {
+                    self.warnings.push(format!(
+                        "{}: layout {klid:08X} is not installed (see tray menu > Installed layouts)",
+                        b.context()
+                    ));
+                }
+            }
+        }
     }
 
     fn compile(&mut self) {
@@ -424,17 +466,44 @@ fn parse_binding(
         }
     };
 
-    let apps_only = parse_matcher_list(t, "apps_only", ctx, errors);
-    let apps_except = parse_matcher_list(t, "apps_except", ctx, errors);
+    let apps_only = parse_matcher_list(t, "apps_only", ctx, errors, warnings);
+    let apps_except = parse_matcher_list(t, "apps_except", ctx, errors, warnings);
 
     if errors.len() != before {
         return None;
+    }
+    let used: &[&str] = match action_name.as_deref() {
+        Some("switch_layout") => &["mode", "layout", "cycle", "method"],
+        Some("capslock") => &["state"],
+        Some("send_keys") => &["send"],
+        _ => &[],
+    };
+    for key in ["mode", "layout", "cycle", "method", "state", "send"] {
+        if t.contains_key(key) && !used.contains(&key) {
+            warnings.push(format!(
+                "{ctx}: '{key}' has no effect for action \"{}\"",
+                action_name.as_deref().unwrap_or_default()
+            ));
+        }
+    }
+    if let Some(Action::SwitchLayout { mode, cycle, .. }) = &action {
+        if matches!(mode, LayoutMode::Set(_)) && !cycle.is_empty() {
+            warnings.push(format!("{ctx}: 'cycle' has no effect with mode \"set\""));
+        }
+        if !matches!(mode, LayoutMode::Set(_)) && t.contains_key("layout") {
+            warnings.push(format!("{ctx}: 'layout' has no effect unless mode = \"set\""));
+        }
+    }
+    if repeat && shortcut.is_some_and(|s| s.is_tap()) {
+        warnings.push(format!("{ctx}: 'repeat' has no effect for a modifier tap"));
     }
     Some(Binding { index, name, shortcut: shortcut?, action: action?, apps_only, apps_except, enabled, repeat })
 }
 
 fn parse_switch_layout(t: &Table, global_method: Method, ctx: &str, errors: &mut Vec<String>) -> Option<Action> {
-    let mode = match get_str(t, "mode", ctx, errors).as_deref() {
+    // A layout id without a mode can only mean "switch to this layout".
+    let mode_text = get_str(t, "mode", ctx, errors).or_else(|| t.contains_key("layout").then(|| "set".to_string()));
+    let mode = match mode_text.as_deref() {
         None | Some("next") => LayoutMode::Next,
         Some("previous") => LayoutMode::Previous,
         Some("set") => match get_str(t, "layout", ctx, errors) {
@@ -505,7 +574,13 @@ pub fn parse_klid(text: &str) -> Option<u32> {
     u32::from_str_radix(text, 16).ok()
 }
 
-fn parse_matcher_list(t: &Table, key: &str, ctx: &str, errors: &mut Vec<String>) -> Vec<AppMatcher> {
+fn parse_matcher_list(
+    t: &Table,
+    key: &str,
+    ctx: &str,
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) -> Vec<AppMatcher> {
     let Some(item) = t.get(key) else { return Vec::new() };
     let Some(array) = item.as_array() else {
         errors.push(format!("{ctx}: {key} must be a list, e.g. [\"game.exe\"]"));
@@ -520,7 +595,9 @@ fn parse_matcher_list(t: &Table, key: &str, ctx: &str, errors: &mut Vec<String>)
                 for (k, v) in it.iter() {
                     table.insert(k, Item::Value(v.clone()));
                 }
-                if let Some(m) = parse_matcher_table(&table, &format!("{ctx}: {key}"), errors) {
+                let entry_ctx = format!("{ctx}: {key}");
+                check_keys(&table, &["exe", "path", "class"], &entry_ctx, warnings);
+                if let Some(m) = parse_matcher_table(&table, &entry_ctx, errors) {
                     out.push(m);
                 }
             }
@@ -924,6 +1001,70 @@ apps_only = ["x.exe"]
         assert!(edit_add_exclude(&mut doc, "again.exe"));
         let text = doc.to_string();
         assert!(text.ends_with("# exe = \"SomeGame.exe\"\n\n[[exclude]]\nexe = \"again.exe\"\n"), "{text}");
+    }
+
+    #[test]
+    fn layout_without_mode_means_set() {
+        let c = parse("[[binding]]\nkeys = \"F1\"\naction = \"switch_layout\"\nlayout = \"00000419\"").unwrap();
+        assert_eq!(
+            c.bindings[0].action,
+            Action::SwitchLayout { mode: LayoutMode::Set(0x419), cycle: vec![], method: Method::Message }
+        );
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+    }
+
+    #[test]
+    fn warnings_for_settings_without_effect() {
+        let text = r#"
+[[binding]]
+keys = "F1"
+action = "capslock"
+send = "Ctrl+C"
+[[binding]]
+keys = "F2"
+action = "switch_layout"
+mode = "next"
+layout = "00000409"
+[[binding]]
+keys = "F3"
+action = "switch_layout"
+layout = "00000409"
+cycle = ["00000409", "00000419"]
+[[binding]]
+keys = "RCtrl"
+action = "switch_layout"
+repeat = true
+apps_only = [{ exe = "a.exe", title = "x" }]
+"#;
+        let all = parse(text).unwrap().warnings.join("\n");
+        assert!(all.contains("binding 1: 'send' has no effect for action \"capslock\""), "{all}");
+        assert!(all.contains("binding 2: 'layout' has no effect unless mode = \"set\""), "{all}");
+        assert!(all.contains("binding 3: 'cycle' has no effect with mode \"set\""), "{all}");
+        assert!(all.contains("binding 4: 'repeat' has no effect for a modifier tap"), "{all}");
+        assert!(all.contains("binding 4: apps_only: unknown setting 'title'"), "{all}");
+    }
+
+    #[test]
+    fn taps_and_installed_layouts() {
+        let text = r#"
+[[binding]]
+name = "English"
+keys = "Win+Ctrl+Shift+1"
+action = "switch_layout"
+layout = "00000409"
+[[binding]]
+keys = "RAlt"
+action = "switch_layout"
+cycle = ["00000409", "00000407"]
+"#;
+        let mut c = parse(text).unwrap();
+        assert!(c.has_taps());
+        assert_eq!(c.candidates(TAP), &[1]);
+        c.check_layouts(&[]);
+        assert!(c.warnings.is_empty());
+        c.check_layouts(&[0x409, 0x419]);
+        assert_eq!(c.warnings, vec!["binding 2: layout 00000407 is not installed (see tray menu > Installed layouts)"]);
+        assert!(!parse(DEFAULT_CONFIG).unwrap().has_taps());
     }
 
     #[test]
