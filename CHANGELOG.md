@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0
 
 - Language indicator: after a binding switches the layout, a small capsule next to the text cursor (or the mouse
   pointer) shows the new language, for example `EN` or `RU`. It stays while the key is held and fades out shortly

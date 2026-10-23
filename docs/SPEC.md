@@ -1,6 +1,6 @@
 # CapsLangChange: technical specification
 
-Status: implemented in 0.1.0; modifier taps added in 0.2.0; language indicator added after 0.2.0. Section 14 lists where the
+Status: implemented in 0.1.0; modifier taps added in 0.2.0; language indicator added in 0.3.0. Section 14 lists where the
 implementation refined this specification; `docs/ARCHITECTURE.md` describes the code as built.
 
 ## 1. Purpose
