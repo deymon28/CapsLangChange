@@ -26,6 +26,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 use crate::autostart::{self, Mode};
 use crate::config::{self, Config, Method};
 use crate::hook::{self, HookHandle};
+use crate::indicator::IndicatorHandle;
 use crate::inject;
 use crate::layout;
 use crate::log;
@@ -70,6 +71,7 @@ const CMD_OPEN_LOGS: usize = 13;
 const CMD_LAYOUTS: usize = 14;
 const CMD_ABOUT: usize = 15;
 const CMD_EXIT: usize = 16;
+const CMD_INDICATOR: usize = 17;
 const CMD_BINDING_BASE: usize = 1000;
 const CMD_REMOVE_EXCLUDE_BASE: usize = 2000;
 const CMD_ADD_PROGRAM_BASE: usize = 3000;
@@ -92,6 +94,7 @@ pub struct Startup {
 struct App {
     hwnd: HWND,
     hook: HookHandle,
+    indicator: IndicatorHandle,
     paths: Paths,
     config_text: String,
     config: Arc<Config>,
@@ -172,7 +175,8 @@ pub fn run(paths: Paths, config_text: String, config: Arc<Config>, startup: Star
     }
     UI_HWND.store(hwnd as usize, Ordering::Relaxed);
 
-    let hook = match HookHandle::start(Arc::clone(&config), hwnd) {
+    let indicator = IndicatorHandle::start(Arc::clone(&config));
+    let hook = match HookHandle::start(Arc::clone(&config), hwnd, indicator.notifier()) {
         Ok(h) => h,
         Err(e) => {
             log::error!("tray", "{e}");
@@ -209,6 +213,7 @@ pub fn run(paths: Paths, config_text: String, config: Arc<Config>, startup: Star
     let app = App {
         hwnd,
         hook,
+        indicator,
         paths,
         config_text,
         config,
@@ -256,6 +261,7 @@ pub fn run(paths: Paths, config_text: String, config: Arc<Config>, startup: Star
                 WTSUnRegisterSessionNotification(app.hwnd);
             }
             app.hook.stop();
+            app.indicator.stop();
         }
     });
     log::info!("tray", "exited");
@@ -447,6 +453,15 @@ fn command(cmd: usize) {
                 let value = !a.config.restore_capslock_on_leave;
                 a.edit(|doc| {
                     config::edit_set_bool(doc, "restore_capslock_on_leave", value);
+                    true
+                });
+            });
+        }
+        CMD_INDICATOR => {
+            with_app(|a| {
+                let value = !a.config.indicator.enabled;
+                a.edit(|doc| {
+                    config::edit_set_bool(doc, "indicator", value);
                     true
                 });
             });
@@ -678,6 +693,7 @@ impl App {
 
     fn apply(&mut self, config: Arc<Config>) {
         self.config = Arc::clone(&config);
+        self.indicator.set_config(Arc::clone(&config));
         self.hook.set_config(config);
         let app = self.current_foreground();
         self.update_foreground(app, false);
@@ -861,6 +877,7 @@ impl App {
                 self.config.restore_capslock_on_leave,
                 true,
             );
+            item(menu, CMD_INDICATOR, "Show the language after switching", self.config.indicator.enabled, true);
 
             let start = CreatePopupMenu();
             let busy = self.pending_autostart.is_some();

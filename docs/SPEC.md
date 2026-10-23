@@ -1,6 +1,6 @@
 # CapsLangChange: technical specification
 
-Status: implemented in 0.1.0; modifier taps added in 0.2.0. Section 14 lists where the
+Status: implemented in 0.1.0; modifier taps added in 0.2.0; language indicator added after 0.2.0. Section 14 lists where the
 implementation refined this specification; `docs/ARCHITECTURE.md` describes the code as built.
 
 ## 1. Purpose
@@ -374,6 +374,11 @@ CapsLangChange/
   only while such a binding is configured. The recorder also records taps and masks recorded Win/Alt chords.
 - `layout` without `mode` implies `mode = "set"`. Settings without effect for the action, and layout ids that are
   not installed, produce warnings.
+- Language indicator (added later): after a `switch_layout` binding, a click-through capsule next to the text caret
+  (or the mouse pointer) shows the two-letter language code of the new layout, or an own label per layout id. It
+  stays while the trigger key is held and for `indicator_duration_ms` afterwards. Settings: `indicator`,
+  `indicator_position`, `indicator_duration_ms`, `indicator_labels`; tray toggle. It runs on its own thread; the
+  hook only posts messages to it. Layout changes made outside CapsLangChange are not shown.
 
 ## 15. Possible later additions
 

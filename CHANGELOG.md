@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Language indicator: after a binding switches the layout, a small capsule next to the text cursor (or the mouse
+  pointer) shows the new language, for example `EN` or `RU`. It stays while the key is held and fades out shortly
+  after. Settings `indicator`, `indicator_position`, `indicator_duration_ms` and `indicator_labels`; tray menu item
+  **Show the language after switching**.
+
 ## 0.2.0
 
 - Modifier taps as triggers: `keys = "RCtrl"` (or `RAlt`, `LShift`, `Win`, ...) fires when the modifier is pressed and

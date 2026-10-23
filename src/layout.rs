@@ -14,7 +14,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_INPUTLANGCHANGEREQUEST,
 };
 
-use crate::config::{self, Config, LayoutMode};
+use crate::config::{self, Config, Indicator, LayoutMode};
 use crate::log;
 use crate::util::{from_wide, wide};
 
@@ -151,6 +151,36 @@ fn locale_name(lang: u16) -> String {
     if n > 0 { from_wide(&buf) } else { format!("{lang:04X}") }
 }
 
+/// Keyboard layout of the foreground window's thread.
+pub fn foreground_layout() -> HKL {
+    // SAFETY: plain queries.
+    unsafe {
+        let foreground = GetForegroundWindow();
+        let thread = if foreground.is_null() { 0 } else { GetWindowThreadProcessId(foreground, std::ptr::null_mut()) };
+        GetKeyboardLayout(thread)
+    }
+}
+
+/// Short text for a layout: its own label from the indicator settings, otherwise the language code ("EN", "RU", "UK").
+pub fn short_name(hkl: HKL, indicator: &Indicator) -> String {
+    if let Some(label) = indicator.label(klid_of(hkl)) {
+        return label.to_string();
+    }
+    let mut buf = [0u16; 85];
+    let lang = hkl as usize as u32 & 0xFFFF;
+    // SAFETY: buffer length passed.
+    let n = unsafe { LCIDToLocaleName(lang, buf.as_mut_ptr(), buf.len() as i32, 0) };
+    if n > 0 { language_code(&from_wide(&buf)) } else { "?".into() }
+}
+
+/// Upper-case language part of a locale name: "en-US" -> "EN", "sr-Latn-RS" -> "SR".
+fn language_code(locale: &str) -> String {
+    match locale.split('-').next() {
+        Some(lang) if !lang.is_empty() => lang.to_uppercase(),
+        _ => "?".into(),
+    }
+}
+
 /// Human-readable list of installed layouts for the tray "Installed layouts" dialog.
 pub fn describe_installed() -> Vec<String> {
     installed()
@@ -212,4 +242,18 @@ fn choose(mode: LayoutMode, cycle: &[u32], current: HKL, all: &[HKL]) -> Option<
         (_, Some(p)) => ring[(p + 1) % n],
         (_, None) => ring[0],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn language_codes() {
+        assert_eq!(language_code("en-US"), "EN");
+        assert_eq!(language_code("uk-UA"), "UK");
+        assert_eq!(language_code("sr-Latn-RS"), "SR");
+        assert_eq!(language_code("fil"), "FIL");
+        assert_eq!(language_code(""), "?");
+    }
 }

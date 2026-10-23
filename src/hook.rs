@@ -24,6 +24,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 
 use crate::config::{Action, CapsState, Config, LayoutMode, Method};
 use crate::engine::{Decision, Engine, Origin};
+use crate::indicator::Notifier;
 use crate::inject::{self, TAG_BASE, TAG_MASK, TAG_RESTORE};
 use crate::keys::MODIFIER_VKS;
 use crate::{layout, log, process};
@@ -47,6 +48,9 @@ struct Ctx {
     mouse_hook: HHOOK,
     ui: HWND,
     last_event_tick: u32,
+    indicator: Notifier,
+    /// Trigger key of a layout switch that is still held: the indicator stays until it is released.
+    indicator_key: Option<u8>,
 }
 
 impl Ctx {
@@ -82,12 +86,12 @@ pub struct HookHandle {
 
 impl HookHandle {
     /// Starts the hook thread and waits until the hook is installed.
-    pub fn start(config: Arc<Config>, ui: HWND) -> Result<HookHandle, String> {
+    pub fn start(config: Arc<Config>, ui: HWND, indicator: Notifier) -> Result<HookHandle, String> {
         let (tx, rx) = mpsc::channel::<Result<u32, String>>();
         let ui_addr = ui as usize;
         let join = std::thread::Builder::new()
             .name("keyboard-hook".into())
-            .spawn(move || run(config, ui_addr as HWND, tx))
+            .spawn(move || run(config, ui_addr as HWND, indicator, tx))
             .map_err(|e| format!("cannot start the hook thread: {e}"))?;
         match rx.recv() {
             Ok(Ok(thread_id)) => Ok(HookHandle { thread_id, join: Some(join) }),
@@ -143,7 +147,7 @@ fn install(kind: WINDOWS_HOOK_ID, proc: HookProc) -> HHOOK {
     unsafe { SetWindowsHookExW(kind, Some(proc), GetModuleHandleW(std::ptr::null()), 0) }
 }
 
-fn run(config: Arc<Config>, ui: HWND, ready: mpsc::Sender<Result<u32, String>>) {
+fn run(config: Arc<Config>, ui: HWND, indicator: Notifier, ready: mpsc::Sender<Result<u32, String>>) {
     // SAFETY: thread-local Win32 calls on this thread.
     unsafe {
         SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
@@ -160,8 +164,15 @@ fn run(config: Arc<Config>, ui: HWND, ready: mpsc::Sender<Result<u32, String>>) 
         return;
     }
     CTX.with(|c| {
-        let mut ctx =
-            Ctx { engine, hook, mouse_hook: std::ptr::null_mut(), ui, last_event_tick: unsafe { GetTickCount() } };
+        let mut ctx = Ctx {
+            engine,
+            hook,
+            mouse_hook: std::ptr::null_mut(),
+            ui,
+            last_event_tick: unsafe { GetTickCount() },
+            indicator,
+            indicator_key: None,
+        };
         ctx.update_mouse_hook();
         *c.borrow_mut() = Some(ctx);
     });
@@ -238,6 +249,9 @@ fn reinstall(reason: &str) {
         ctx.update_mouse_hook();
         ctx.engine.cancel_tap();
         ctx.engine.set_physical(read_held());
+        if ctx.indicator_key.take().is_some() {
+            ctx.indicator.released();
+        }
         // SAFETY: plain call.
         ctx.last_event_tick = unsafe { GetTickCount() };
     });
@@ -302,17 +316,26 @@ fn handle(kb: &KBDLLHOOKSTRUCT, wparam: WPARAM) -> bool {
             ctx.last_event_tick = kb.time;
         }
 
+        if origin == Origin::External && ctx.indicator_key == Some(vk) {
+            if down {
+                ctx.indicator.repeat();
+            } else {
+                ctx.indicator_key = None;
+                ctx.indicator.released();
+            }
+        }
+
         let decision =
             ctx.engine.on_key(vk, kb.scanCode, down, kb.time, origin, read_held, process::foreground_app_cached);
-        let (mask, run, held, swallow) = match decision {
+        let (mask, run, held, swallow, tap) = match decision {
             Decision::Pass => return false,
-            Decision::Swallow { mask, run, held } => (mask, run, held, true),
+            Decision::Swallow { mask, run, held } => (mask, run, held, true, false),
             // A Win or Alt tap: the mask must reach the system before the key-up, so replace the key-up.
             Decision::Tap { mask: true, run, held } => {
                 inject::mask_then_release(vk);
-                (false, run, held, true)
+                (false, run, held, true, true)
             }
-            Decision::Tap { mask: false, run, held } => (false, run, held, false),
+            Decision::Tap { mask: false, run, held } => (false, run, held, false, true),
             Decision::Recorded { shortcut, swallow, mask } => {
                 if shortcut.is_tap() {
                     if swallow {
@@ -338,7 +361,15 @@ fn handle(kb: &KBDLLHOOKSTRUCT, wparam: WPARAM) -> bool {
             let config = Arc::clone(ctx.engine.config());
             if let Some(binding) = config.bindings.get(index) {
                 log::debug!("hook", "binding {} fired: {}", index + 1, binding.label());
+                let indicate = config.indicator.enabled && matches!(binding.action, Action::SwitchLayout { .. });
+                let before = if indicate { layout::foreground_layout() } else { std::ptr::null_mut() };
                 execute(&binding.action, held);
+                if indicate {
+                    // A tap fires on the key-up: nothing is held any more.
+                    let key = if tap { 0 } else { vk };
+                    ctx.indicator_key = (key != 0).then_some(key);
+                    ctx.indicator.switched(key, before);
+                }
             }
         }
         swallow

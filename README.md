@@ -12,6 +12,7 @@ every key reaches the program unchanged.
 - Your own shortcuts: switch to the next, previous or a specific layout, cycle through chosen layouts,
   toggle or set the real Caps Lock, remap a shortcut to another one, or block it.
 - Every shortcut can be limited to, or kept away from, specific programs.
+- After a switch, the new language (`EN`, `RU`, ...) appears for a moment in a small box next to the text cursor.
 - Excluded programs (for example games) get all keys untouched. Caps Lock is set back to how it was
   when you leave them, so you do not return to the desktop typing in capitals.
 - Settings from the tray icon; everything else in one commented text file that is applied as you save it.
@@ -51,6 +52,7 @@ real Caps Lock, because a binding for plain `CapsLock` only fires when no modifi
 | Excluded programs | Remove an exclusion; add a running program; or add whatever program is active 5 seconds later (switch to a fullscreen game and wait). |
 | Record a shortcut... | Press any combination; its text for the config file (for example `Win+Ctrl+Shift+Space`) is copied to the clipboard. |
 | Restore Caps Lock after excluded programs | See [Caps Lock in excluded programs](#caps-lock-in-excluded-programs). |
+| Show the language after switching | Turn the [language indicator](#language-indicator) on or off. |
 | Start with Windows | Off, Normal, or As administrator. |
 | Open config file / Reload config / Check config | Edit and validate the configuration. |
 | Installed layouts | Shows the layout ids (`00000409` ...) to use in the config. |
@@ -71,6 +73,7 @@ enabled = true                    # false = pause everything
 method = "win_space"              # default layout switch method: "win_space" or "message"
 restore_capslock_on_leave = true  # see "Caps Lock in excluded programs"
 on_lookup_failure = "act"         # active program unknown: "act" = treat as normal, "pass" = do nothing
+indicator = true                  # see "Language indicator"
 ```
 
 ### Bindings
@@ -153,6 +156,26 @@ A lone Win or Alt tap that triggers a binding does not open the Start menu or a 
 `keys = "Win"` with `action = "block"` a way to stop the Start menu from opening on a lone Win press (for example only
 in some programs, with `apps_only`). While a tap binding exists, CapsLangChange also watches mouse clicks (only to
 cancel a pending tap; nothing is recorded).
+
+### Language indicator
+
+When a `switch_layout` binding fires, a small capsule next to the text cursor shows the language you switched to, as
+a two-letter code (`EN`, `RU`, `UK`, `DE`, ...). It stays while the key is held (holding Caps Lock does not switch
+again, so it simply shows the current language), and disappears `indicator_duration_ms` after the switch or after
+you release the key. It never takes the focus and lets mouse clicks through. It follows the Windows light or dark
+theme.
+
+```toml
+indicator = true                  # false = never show it (also from the tray)
+indicator_position = "caret"      # "caret" = next to the text cursor, "mouse" = next to the mouse pointer
+indicator_duration_ms = 800       # 100 to 10000
+indicator_labels = { "00000422" = "UA", "00010409" = "DV" }   # own text (up to 4 characters) per layout id
+```
+
+The text cursor is found through the standard Windows caret, or through accessibility for browsers, Electron apps and
+other programs that draw their own. When a program reports neither, the capsule appears next to the mouse pointer.
+The code comes from the layout's language, so two layouts of one language show the same code unless you give them
+labels.
 
 ### Excluded programs
 
@@ -254,6 +277,9 @@ From PowerShell, pipe the output to see it before the prompt returns, for exampl
 - **A setting does not apply**: tray > **Check config**. The log is in `%LOCALAPPDATA%\CapsLangChange\logs`. Start with
   `--debug` to log which binding fired. Typed text is never logged.
 - **The tray icon is hidden**: Windows settings > Personalization > Taskbar > Other system tray icons.
+- **The language indicator shows the previous language or appears next to the mouse pointer**: some programs (a few
+  Store apps and consoles) neither apply the switch to their main window thread nor report a text cursor. Use
+  `indicator_position = "mouse"`, or turn it off with `indicator = false`.
 
 ## Privacy and security
 

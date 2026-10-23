@@ -24,6 +24,13 @@ restore_capslock_on_leave = true
 # When the active program cannot be identified: "act" = treat it as a normal program, "pass" = do nothing.
 on_lookup_failure = "act"
 
+# After a binding switches the layout, show the selected language (EN, RU, ...) in a small box next to the
+# text cursor. It stays while the key is held and for indicator_duration_ms after that.
+indicator = true
+indicator_position = "caret"     # "caret" (text cursor; the mouse pointer if there is none) or "mouse"
+indicator_duration_ms = 800
+# indicator_labels = { "00000422" = "UA" }   # own text for a layout id (see tray menu > Installed layouts)
+
 [[binding]]
 name = "Switch layout"
 keys = "CapsLock"
@@ -85,6 +92,40 @@ impl Method {
 pub enum LookupFailure {
     Act,
     Pass,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum IndicatorPosition {
+    /// Next to the text cursor; next to the mouse pointer if the active program reports none.
+    Caret,
+    Mouse,
+}
+
+/// The language indicator shown after a binding switches the layout.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Indicator {
+    pub enabled: bool,
+    pub position: IndicatorPosition,
+    /// How long it stays after the switch, or after the trigger key is released.
+    pub duration_ms: u32,
+    /// Own text per layout id (KLID), instead of the language code.
+    pub labels: Vec<(u32, String)>,
+}
+
+impl Indicator {
+    pub const MIN_DURATION_MS: u32 = 100;
+    pub const MAX_DURATION_MS: u32 = 10_000;
+    pub const MAX_LABEL_CHARS: usize = 4;
+
+    pub fn label(&self, klid: u32) -> Option<&str> {
+        self.labels.iter().find(|(k, _)| *k == klid).map(|(_, l)| l.as_str())
+    }
+}
+
+impl Default for Indicator {
+    fn default() -> Indicator {
+        Indicator { enabled: true, position: IndicatorPosition::Caret, duration_ms: 800, labels: Vec::new() }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -228,6 +269,7 @@ pub struct Config {
     pub method: Method,
     pub restore_capslock_on_leave: bool,
     pub on_lookup_failure: LookupFailure,
+    pub indicator: Indicator,
     pub bindings: Vec<Binding>,
     pub excludes: Vec<AppMatcher>,
     pub warnings: Vec<String>,
@@ -270,6 +312,13 @@ impl Config {
                 }
             }
         }
+        for (klid, _) in &self.indicator.labels {
+            if !installed.contains(klid) {
+                self.warnings.push(format!(
+                    "indicator_labels: layout {klid:08X} is not installed (see tray menu > Installed layouts)"
+                ));
+            }
+        }
     }
 
     fn compile(&mut self) {
@@ -293,8 +342,18 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
-    const TOP_KEYS: [&str; 6] =
-        ["enabled", "method", "restore_capslock_on_leave", "on_lookup_failure", "binding", "exclude"];
+    const TOP_KEYS: [&str; 10] = [
+        "enabled",
+        "method",
+        "restore_capslock_on_leave",
+        "on_lookup_failure",
+        "indicator",
+        "indicator_position",
+        "indicator_duration_ms",
+        "indicator_labels",
+        "binding",
+        "exclude",
+    ];
     for (key, _) in doc.iter() {
         if !TOP_KEYS.contains(&key) {
             warnings.push(format!("unknown setting '{key}' is ignored"));
@@ -320,6 +379,7 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
             LookupFailure::Act
         }
     };
+    let indicator = parse_indicator(root, &mut errors);
 
     let mut bindings = Vec::new();
     for (index, table) in tables(root, "binding", &mut errors).into_iter().enumerate() {
@@ -364,6 +424,7 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
         method,
         restore_capslock_on_leave: restore,
         on_lookup_failure,
+        indicator,
         bindings,
         excludes,
         warnings,
@@ -371,6 +432,58 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
     };
     config.compile();
     Ok(config)
+}
+
+fn parse_indicator(root: &Table, errors: &mut Vec<String>) -> Indicator {
+    let default = Indicator::default();
+    let enabled = get_bool(root, "indicator", default.enabled, "", errors);
+    let position = match get_str(root, "indicator_position", "", errors).as_deref() {
+        None | Some("caret") => IndicatorPosition::Caret,
+        Some("mouse") => IndicatorPosition::Mouse,
+        Some(other) => {
+            errors.push(format!("indicator_position: unknown value '{other}' (use \"caret\" or \"mouse\")"));
+            default.position
+        }
+    };
+    let range = Indicator::MIN_DURATION_MS..=Indicator::MAX_DURATION_MS;
+    let duration_ms = match root.get("indicator_duration_ms") {
+        None => default.duration_ms,
+        Some(item) => match item.as_integer().and_then(|n| u32::try_from(n).ok()).filter(|n| range.contains(n)) {
+            Some(n) => n,
+            None => {
+                errors.push(format!(
+                    "indicator_duration_ms must be a whole number from {} to {}",
+                    range.start(),
+                    range.end()
+                ));
+                default.duration_ms
+            }
+        },
+    };
+    let mut labels = Vec::new();
+    if let Some(item) = root.get("indicator_labels") {
+        match item.as_table_like() {
+            Some(table) => {
+                for (key, value) in table.iter() {
+                    let Some(klid) = parse_klid(key) else {
+                        errors.push(format!("indicator_labels: '{key}' is not a layout id like \"00000409\""));
+                        continue;
+                    };
+                    match value.as_str().map(str::trim) {
+                        Some(text) if (1..=Indicator::MAX_LABEL_CHARS).contains(&text.chars().count()) => {
+                            labels.push((klid, text.to_string()))
+                        }
+                        _ => errors.push(format!(
+                            "indicator_labels: the text for {key} must be 1 to {} characters in quotes",
+                            Indicator::MAX_LABEL_CHARS
+                        )),
+                    }
+                }
+            }
+            None => errors.push("indicator_labels must be a table, e.g. { \"00000422\" = \"UA\" }".into()),
+        }
+    }
+    Indicator { enabled, position, duration_ms, labels }
 }
 
 fn binding_context(index: usize, table: &Table) -> String {
@@ -1065,6 +1178,68 @@ cycle = ["00000409", "00000407"]
         c.check_layouts(&[0x409, 0x419]);
         assert_eq!(c.warnings, vec!["binding 2: layout 00000407 is not installed (see tray menu > Installed layouts)"]);
         assert!(!parse(DEFAULT_CONFIG).unwrap().has_taps());
+    }
+
+    #[test]
+    fn indicator_settings() {
+        assert_eq!(parse(DEFAULT_CONFIG).unwrap().indicator, Indicator::default());
+        assert_eq!(parse("").unwrap().indicator, Indicator::default());
+
+        let text = r#"
+indicator = false
+indicator_position = "mouse"
+indicator_duration_ms = 1500
+indicator_labels = { "00000422" = " UA ", "00000409" = "ENG" }
+"#;
+        let mut c = parse(text).unwrap();
+        let i = &c.indicator;
+        assert!(!i.enabled);
+        assert_eq!(i.position, IndicatorPosition::Mouse);
+        assert_eq!(i.duration_ms, 1500);
+        assert_eq!(i.label(0x422), Some("UA"));
+        assert_eq!(i.label(0x409), Some("ENG"));
+        assert_eq!(i.label(0x419), None);
+        c.check_layouts(&[0x409, 0x419]);
+        assert_eq!(
+            c.warnings,
+            vec!["indicator_labels: layout 00000422 is not installed (see tray menu > Installed layouts)"]
+        );
+
+        // A [indicator_labels] section works as well.
+        let c = parse("[indicator_labels]\n00000419 = \"RU\"").unwrap();
+        assert_eq!(c.indicator.label(0x419), Some("RU"));
+
+        let text = r#"
+indicator = "yes"
+indicator_position = "center"
+indicator_duration_ms = 50
+indicator_labels = { "409" = "EN", "00000419" = "RUSSIAN", "00000422" = 5 }
+"#;
+        let all = parse(text).unwrap_err().join("\n");
+        assert!(all.contains("indicator must be true or false"), "{all}");
+        assert!(all.contains("indicator_position: unknown value 'center'"), "{all}");
+        assert!(all.contains("indicator_duration_ms must be a whole number from 100 to 10000"), "{all}");
+        assert!(all.contains("indicator_labels: '409' is not a layout id"), "{all}");
+        assert!(all.contains("the text for 00000419 must be 1 to 4 characters"), "{all}");
+        assert!(all.contains("the text for 00000422 must be 1 to 4 characters"), "{all}");
+        assert!(parse("indicator_labels = [\"UA\"]").unwrap_err()[0].contains("must be a table"));
+    }
+
+    #[test]
+    fn indicator_toggle_edit() {
+        let mut doc: DocumentMut = DEFAULT_CONFIG.parse().unwrap();
+        edit_set_bool(&mut doc, "indicator", false);
+        let text = doc.to_string();
+        assert!(text.contains("indicator = false\nindicator_position"), "{text}");
+        assert!(!parse(&text).unwrap().indicator.enabled);
+
+        // Files from older versions have no indicator setting yet: it is added before the first section.
+        let mut doc: DocumentMut =
+            "enabled = true\n\n[[binding]]\nkeys = \"CapsLock\"\naction = \"switch_layout\"\n".parse().unwrap();
+        edit_set_bool(&mut doc, "indicator", false);
+        let c = parse(&doc.to_string()).unwrap();
+        assert!(!c.indicator.enabled);
+        assert_eq!(c.bindings.len(), 1);
     }
 
     #[test]

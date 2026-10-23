@@ -10,6 +10,7 @@ testable core.
 | --- | --- | --- |
 | UI (main) | hidden top-level window, tray icon and menu, foreground `WinEvent` hook, session/power notifications, config edits | posts thread messages to the hook thread |
 | keyboard-hook | `WH_KEYBOARD_LL` hook (plus `WH_MOUSE_LL` while a modifier-tap binding exists) and its message loop, the `Engine`, input injection | posts window messages to the UI (recorded shortcut) |
+| indicator | click-through layered window with the language capsule, caret lookup (accessibility COM calls) | receives window messages from the hook (switch, key repeat, release) and the UI (configuration) |
 | config-watcher | `ReadDirectoryChangesW` on the config folder | posts `MSG_CONFIG_CHANGED` to the UI |
 | short-lived helper threads | waiting for the elevated helper process (UAC) | post `MSG_HELPER_DONE` to the UI |
 
@@ -28,7 +29,8 @@ a lock.
 | `engine` | per-event decision: pass, swallow, which binding runs; modifier taps; shortcut recorder | no |
 | `hook` | hook thread, origin tagging, watchdog, action execution | yes |
 | `inject` | `SendInput` sequences, mask key, held-modifier lift and restore | yes |
-| `layout` | `WM_INPUTLANGCHANGEREQUEST` switching, HKL to KLID mapping, layout listing | yes |
+| `layout` | `WM_INPUTLANGCHANGEREQUEST` switching, HKL to KLID mapping, layout listing, language codes | yes |
+| `indicator` | indicator thread: caret position, capsule drawing, show / hold / fade timing | yes |
 | `process` | foreground program identification, process enumeration | yes |
 | `tray` | UI thread: tray, menu, notifications, reloads, exclusions, Caps Lock restore, autostart UI | yes |
 | `autostart` | Run registry value, scheduled task XML and `schtasks`, token queries | yes |
@@ -58,6 +60,28 @@ a lock.
 5. On `Swallow { mask, run, held }` the hook first injects the mask key (`VK 0xE8`) when modifiers are held, so the
    swallowed chord's Win/Alt release does not open the Start menu or menu bar or trigger the Windows language hotkey.
    It then executes the action synchronously, so the injected events stay in order relative to later physical input.
+
+## Language indicator
+
+When a `switch_layout` binding runs and `indicator = true`, the hook reads the foreground layout, executes the action
+and posts `switched(key, layout before)` to the indicator window; for a key trigger it remembers the key and posts
+`repeat` for its auto-repeat and `released` for its key-up (or when the hook is re-installed). Posting never waits,
+so the hook stays fast. The indicator thread:
+
+1. finds the anchor once per appearance: the system caret (`GetGUIThreadInfo`, converted to physical coordinates for
+   DPI-unaware windows), else the Active Accessibility caret (`OBJID_CARET`, `IAccessible::accLocation`), else the
+   mouse pointer. This query may call into the foreground process and dispatch messages, so it runs without holding
+   the indicator state and on this thread only: a hung program can stall the indicator, never the keyboard or the
+   tray. A caret outside the foreground window is ignored.
+2. polls the foreground layout every 30 ms while it is active. `win_space` switching takes effect asynchronously, so
+   the capsule appears once the layout differs from the one before the switch, or after 300 ms.
+3. draws the capsule into a premultiplied 32-bit bitmap (signed-distance antialiasing, shadow, grayscale text
+   centred on its ink) and shows it with `UpdateLayeredWindow` (`WS_EX_LAYERED | WS_EX_TRANSPARENT |
+   WS_EX_NOACTIVATE | WS_EX_TOPMOST`), scaled to the monitor's DPI and kept inside its work area.
+4. hides it after the configured duration, counted from the switch and from the key release, with a short fade. If
+   no auto-repeat arrives for 2 seconds while the key is "held", the release counts as missed.
+
+The timer exists only while the capsule is pending or visible.
 
 ## Injection and stuck-key prevention
 
@@ -110,8 +134,11 @@ must not become a way to run code with administrator rights.
 `cargo test` covers the pure modules: shortcut parsing and formatting round-trips, exact modifier matching,
 configuration parsing and error messages, comment-preserving edits, binding priority, the engine's pairing,
 auto-repeat, scope, exclusion, restore-drop and AltGr rules, modifier taps and the recorder, warnings for settings
-without effect and for layouts that are not installed, autostart XML escaping, and process lookup.
+without effect and for layouts that are not installed, autostart XML escaping, process lookup, the indicator settings
+and the indicator's pure helpers (placement, capsule shape, ink bounds, compositing, language codes).
 
 Win32 behaviour was verified manually on Windows 11 with injected input: layout switching with both methods, Caps Lock
-actions, modifier restore during held chords, exclusions, hot reload, single instance, and clean exit. Elevated
+actions, modifier restore during held chords, exclusions, hot reload, single instance, and clean exit. The indicator
+was checked on screen next to a Win32 text box caret (system caret and accessibility caret agree), including the
+hide after release. Elevated
 autostart, the Caps Lock restore on foreground change, and behaviour inside games need checks on a real desktop session.

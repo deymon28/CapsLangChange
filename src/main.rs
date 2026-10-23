@@ -6,6 +6,7 @@ mod autostart;
 mod config;
 mod engine;
 mod hook;
+mod indicator;
 mod inject;
 mod keys;
 mod layout;
