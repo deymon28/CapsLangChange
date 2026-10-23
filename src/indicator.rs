@@ -384,7 +384,7 @@ impl State {
         let shown_at = if fresh { now } else { self.shown.as_ref().map_or(now, |(_, at)| *at) };
         if !same || self.surface.is_none() {
             let anchor = self.anchor.unwrap_or(Anchor::Mouse(cursor_pos()));
-            self.surface = render(&text, anchor);
+            self.surface = render(&text, anchor, self.config.indicator.height);
         }
         if self.surface.is_none() {
             self.hide();
@@ -603,12 +603,13 @@ const DARK: Theme =
 const LIGHT: Theme =
     Theme { fill: [0.985, 0.985, 0.985, 0.97], border: [0.0, 0.0, 0.0, 0.10], text: [0.10, 0.10, 0.10], shadow: 0.18 };
 
-/// Sizes in pixels at 96 DPI.
-const HEIGHT: f32 = 30.0;
-const FONT_PX: f32 = 15.0;
-const PADDING: f32 = 13.0;
-const MIN_WIDTH: f32 = 48.0;
-const MARGIN: f32 = 8.0;
+/// Proportions relative to the configured height.
+/// Font size: half the height plus a constant, so small boxes keep readable letters.
+const FONT: f32 = 0.5;
+const FONT_EXTRA: f32 = 2.5;
+const PADDING: f32 = 0.43;
+const MIN_WIDTH: f32 = 1.6;
+const MARGIN: f32 = 0.27;
 
 fn light_theme() -> bool {
     let mut value = 0u32;
@@ -628,7 +629,8 @@ fn light_theme() -> bool {
     rc == ERROR_SUCCESS && value != 0
 }
 
-fn render(text: &str, anchor: Anchor) -> Option<Surface> {
+/// Draws the capsule for `text`, `base_height` pixels high at 96 DPI, next to `anchor`.
+fn render(text: &str, anchor: Anchor, base_height: u32) -> Option<Surface> {
     let reference = match anchor {
         Anchor::Caret(r) => POINT { x: r.left, y: r.bottom },
         Anchor::Mouse(p) => p,
@@ -644,19 +646,20 @@ fn render(text: &str, anchor: Anchor) -> Option<Surface> {
         (info.rcWork, dpi_x.max(96) as f32 / 96.0)
     };
     let px = |v: f32| (v * scale).round() as i32;
+    let h = base_height as f32;
     let theme = if light_theme() { &LIGHT } else { &DARK };
 
-    let (mask, mask_w, mask_h) = text_mask(text, px(FONT_PX))?;
+    let (mask, mask_w, mask_h) = text_mask(text, px(h * FONT + FONT_EXTRA))?;
     let (ix0, iy0, ix1, iy1) = ink_bounds(&mask, mask_w, mask_h).unwrap_or((0, 0, mask_w, mask_h));
     let (ink_w, ink_h) = (ix1 - ix0, iy1 - iy0);
 
-    let height = px(HEIGHT);
-    let width = (ink_w as i32 + 2 * px(PADDING)).max(px(MIN_WIDTH));
-    let margin = px(MARGIN);
+    let height = px(h);
+    let width = (ink_w as i32 + 2 * px(h * PADDING)).max(px(h * MIN_WIDTH));
+    let margin = px((h * MARGIN).max(3.0));
     let size = SIZE { cx: width + 2 * margin, cy: height + 2 * margin };
 
     let (anchor_rect, gap) = match anchor {
-        Anchor::Caret(r) => (r, px(3.0)),
+        Anchor::Caret(r) => (r, px((h * 0.1).max(2.0))),
         Anchor::Mouse(p) => (RECT { left: p.x + px(12.0), top: p.y - px(4.0), right: p.x, bottom: p.y + px(20.0) }, 0),
     };
     let (x, y) = place(anchor_rect, gap, width, height, work);

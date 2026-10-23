@@ -168,9 +168,13 @@ theme.
 ```toml
 indicator = true                  # false = never show it (also from the tray)
 indicator_position = "caret"      # "caret" = next to the text cursor, "mouse" = next to the mouse pointer
-indicator_duration_ms = 800       # 100 to 10000
+indicator_duration_ms = 500       # 100 to 10000
+indicator_height = 15             # box height in pixels at 100% display scale, 10 to 60 (text scales with it)
 indicator_labels = { "00000422" = "UA", "00010409" = "DV" }   # own text (up to 4 characters) per layout id
 ```
+
+A configuration file from an older version gets the new settings with their comments the next time the program
+starts; your other settings and comments stay as they are.
 
 The text cursor is found through the standard Windows caret, or through accessibility for browsers, Electron apps and
 other programs that draw their own. When a program reports neither, the capsule appears next to the mouse pointer.

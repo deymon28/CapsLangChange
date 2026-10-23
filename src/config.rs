@@ -2,6 +2,7 @@
 //!
 //! Parsing and editing are pure (text in, text out); file access lives in `load_or_create` and `write_atomic`.
 
+use std::ops::RangeInclusive;
 use std::path::Path;
 
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, Value};
@@ -26,10 +27,11 @@ on_lookup_failure = "act"
 
 # After a binding switches the layout, show the selected language (EN, RU, ...) in a small box next to the
 # text cursor. It stays while the key is held and for indicator_duration_ms after that.
+# Own text for a layout id (see tray menu > Installed layouts): indicator_labels = { "00000422" = "UA" }
 indicator = true
 indicator_position = "caret"     # "caret" (text cursor; the mouse pointer if there is none) or "mouse"
-indicator_duration_ms = 800
-# indicator_labels = { "00000422" = "UA" }   # own text for a layout id (see tray menu > Installed layouts)
+indicator_duration_ms = 500      # 100 to 10000
+indicator_height = 15            # box height in pixels at 100% display scale, 10 to 60
 
 [[binding]]
 name = "Switch layout"
@@ -108,6 +110,8 @@ pub struct Indicator {
     pub position: IndicatorPosition,
     /// How long it stays after the switch, or after the trigger key is released.
     pub duration_ms: u32,
+    /// Height of the box in pixels at 96 DPI; everything else scales with it.
+    pub height: u32,
     /// Own text per layout id (KLID), instead of the language code.
     pub labels: Vec<(u32, String)>,
 }
@@ -115,6 +119,8 @@ pub struct Indicator {
 impl Indicator {
     pub const MIN_DURATION_MS: u32 = 100;
     pub const MAX_DURATION_MS: u32 = 10_000;
+    pub const MIN_HEIGHT: u32 = 10;
+    pub const MAX_HEIGHT: u32 = 60;
     pub const MAX_LABEL_CHARS: usize = 4;
 
     pub fn label(&self, klid: u32) -> Option<&str> {
@@ -124,7 +130,13 @@ impl Indicator {
 
 impl Default for Indicator {
     fn default() -> Indicator {
-        Indicator { enabled: true, position: IndicatorPosition::Caret, duration_ms: 800, labels: Vec::new() }
+        Indicator {
+            enabled: true,
+            position: IndicatorPosition::Caret,
+            duration_ms: 500,
+            height: 15,
+            labels: Vec::new(),
+        }
     }
 }
 
@@ -342,7 +354,7 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
 
-    const TOP_KEYS: [&str; 10] = [
+    const TOP_KEYS: [&str; 11] = [
         "enabled",
         "method",
         "restore_capslock_on_leave",
@@ -350,6 +362,7 @@ pub fn parse(text: &str) -> Result<Config, Vec<String>> {
         "indicator",
         "indicator_position",
         "indicator_duration_ms",
+        "indicator_height",
         "indicator_labels",
         "binding",
         "exclude",
@@ -445,21 +458,15 @@ fn parse_indicator(root: &Table, errors: &mut Vec<String>) -> Indicator {
             default.position
         }
     };
-    let range = Indicator::MIN_DURATION_MS..=Indicator::MAX_DURATION_MS;
-    let duration_ms = match root.get("indicator_duration_ms") {
-        None => default.duration_ms,
-        Some(item) => match item.as_integer().and_then(|n| u32::try_from(n).ok()).filter(|n| range.contains(n)) {
-            Some(n) => n,
-            None => {
-                errors.push(format!(
-                    "indicator_duration_ms must be a whole number from {} to {}",
-                    range.start(),
-                    range.end()
-                ));
-                default.duration_ms
-            }
-        },
-    };
+    let duration_ms = get_u32(
+        root,
+        "indicator_duration_ms",
+        default.duration_ms,
+        Indicator::MIN_DURATION_MS..=Indicator::MAX_DURATION_MS,
+        errors,
+    );
+    let height =
+        get_u32(root, "indicator_height", default.height, Indicator::MIN_HEIGHT..=Indicator::MAX_HEIGHT, errors);
     let mut labels = Vec::new();
     if let Some(item) = root.get("indicator_labels") {
         match item.as_table_like() {
@@ -483,7 +490,7 @@ fn parse_indicator(root: &Table, errors: &mut Vec<String>) -> Indicator {
             None => errors.push("indicator_labels must be a table, e.g. { \"00000422\" = \"UA\" }".into()),
         }
     }
-    Indicator { enabled, position, duration_ms, labels }
+    Indicator { enabled, position, duration_ms, height, labels }
 }
 
 fn binding_context(index: usize, table: &Table) -> String {
@@ -765,6 +772,17 @@ fn get_bool(t: &Table, key: &str, default: bool, ctx: &str, errors: &mut Vec<Str
     }
 }
 
+fn get_u32(t: &Table, key: &str, default: u32, range: RangeInclusive<u32>, errors: &mut Vec<String>) -> u32 {
+    let Some(item) = t.get(key) else { return default };
+    match item.as_integer().and_then(|n| u32::try_from(n).ok()).filter(|n| range.contains(n)) {
+        Some(n) => n,
+        None => {
+            errors.push(format!("{key} must be a whole number from {} to {}", range.start(), range.end()));
+            default
+        }
+    }
+}
+
 fn get_str(t: &Table, key: &str, ctx: &str, errors: &mut Vec<String>) -> Option<String> {
     let item = t.get(key)?;
     match item.as_str() {
@@ -799,6 +817,27 @@ fn set_value(table: &mut Table, key: &str, value: Value) {
             table.insert(key, Item::Value(value));
         }
     }
+}
+
+/// Top-level settings added after the first release. Files created by an older version get them (with their
+/// comments from the default configuration) on start, so every setting is visible in the file.
+const ADDED_SETTINGS: [&str; 4] = ["indicator", "indicator_position", "indicator_duration_ms", "indicator_height"];
+
+/// Adds the settings of `ADDED_SETTINGS` that the file lacks, with their default values and comments, after
+/// the existing top-level settings. Returns `None` if nothing is missing or the file cannot be parsed.
+pub fn add_missing_settings(text: &str) -> Option<String> {
+    let mut doc: DocumentMut = text.parse().ok()?;
+    let defaults: DocumentMut = DEFAULT_CONFIG.parse().expect("default configuration is valid TOML");
+    let mut added = false;
+    for name in ADDED_SETTINGS {
+        if doc.contains_key(name) {
+            continue;
+        }
+        let (key, item) = defaults.as_table().get_key_value(name).expect("setting is in the default configuration");
+        doc.as_table_mut().insert_formatted(key, item.clone());
+        added = true;
+    }
+    added.then(|| doc.to_string())
 }
 
 /// Enables or disables one `[[binding]]`. Returns false if the index does not exist.
@@ -1189,6 +1228,7 @@ cycle = ["00000409", "00000407"]
 indicator = false
 indicator_position = "mouse"
 indicator_duration_ms = 1500
+indicator_height = 24
 indicator_labels = { "00000422" = " UA ", "00000409" = "ENG" }
 "#;
         let mut c = parse(text).unwrap();
@@ -1196,6 +1236,7 @@ indicator_labels = { "00000422" = " UA ", "00000409" = "ENG" }
         assert!(!i.enabled);
         assert_eq!(i.position, IndicatorPosition::Mouse);
         assert_eq!(i.duration_ms, 1500);
+        assert_eq!(i.height, 24);
         assert_eq!(i.label(0x422), Some("UA"));
         assert_eq!(i.label(0x409), Some("ENG"));
         assert_eq!(i.label(0x419), None);
@@ -1213,16 +1254,51 @@ indicator_labels = { "00000422" = " UA ", "00000409" = "ENG" }
 indicator = "yes"
 indicator_position = "center"
 indicator_duration_ms = 50
+indicator_height = 100
 indicator_labels = { "409" = "EN", "00000419" = "RUSSIAN", "00000422" = 5 }
 "#;
         let all = parse(text).unwrap_err().join("\n");
         assert!(all.contains("indicator must be true or false"), "{all}");
         assert!(all.contains("indicator_position: unknown value 'center'"), "{all}");
         assert!(all.contains("indicator_duration_ms must be a whole number from 100 to 10000"), "{all}");
+        assert!(all.contains("indicator_height must be a whole number from 10 to 60"), "{all}");
         assert!(all.contains("indicator_labels: '409' is not a layout id"), "{all}");
         assert!(all.contains("the text for 00000419 must be 1 to 4 characters"), "{all}");
         assert!(all.contains("the text for 00000422 must be 1 to 4 characters"), "{all}");
         assert!(parse("indicator_labels = [\"UA\"]").unwrap_err()[0].contains("must be a table"));
+    }
+
+    #[test]
+    fn missing_settings_are_added_with_comments() {
+        // A configuration written by version 0.2.0.
+        let old = DEFAULT_CONFIG.lines().filter(|l| !l.contains("indicator")).collect::<Vec<_>>().join("\n");
+        let old = old.replace("on_lookup_failure = \"act\"\n\n\n", "on_lookup_failure = \"act\"\n\n");
+        let old = format!("{old}\n");
+        let c = parse(&old).unwrap();
+        assert_eq!(c.indicator, Indicator::default());
+
+        let text = add_missing_settings(&old).unwrap();
+        assert!(add_missing_settings(&text).is_none(), "nothing is added twice");
+        let start = text.find("# After a binding switches the layout").expect(&text);
+        let end = text.find("[[binding]]").unwrap();
+        assert!(start < text.find("indicator_height = 15").unwrap() && text.find("indicator_height").unwrap() < end);
+        assert!(text.contains("indicator_duration_ms = 500      # 100 to 10000\n"), "{text}");
+        assert!(text.contains("on_lookup_failure = \"act\"\n\n# After a binding"), "{text}");
+        assert!(text.ends_with("# exe = \"SomeGame.exe\"\n"), "{text}");
+        let c = parse(&text).unwrap();
+        assert!(c.warnings.is_empty(), "{:?}", c.warnings);
+        assert_eq!(c.bindings.len(), 1);
+
+        // Values the user already has are kept; only the missing ones are added.
+        let text = add_missing_settings("indicator = false\nindicator_height = 30\n").unwrap();
+        let c = parse(&text).unwrap();
+        assert!(!c.indicator.enabled);
+        assert_eq!(c.indicator.height, 30);
+        assert_eq!(c.indicator.duration_ms, 500);
+        assert_eq!(text.matches("indicator_height").count(), 1, "{text}");
+
+        assert!(add_missing_settings(DEFAULT_CONFIG).is_none());
+        assert!(add_missing_settings("enabled = ").is_none());
     }
 
     #[test]

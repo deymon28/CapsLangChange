@@ -377,8 +377,10 @@ CapsLangChange/
 - Language indicator (added later): after a `switch_layout` binding, a click-through capsule next to the text caret
   (or the mouse pointer) shows the two-letter language code of the new layout, or an own label per layout id. It
   stays while the trigger key is held and for `indicator_duration_ms` afterwards. Settings: `indicator`,
-  `indicator_position`, `indicator_duration_ms`, `indicator_labels`; tray toggle. It runs on its own thread; the
-  hook only posts messages to it. Layout changes made outside CapsLangChange are not shown.
+  `indicator_position`, `indicator_duration_ms` (500), `indicator_height` (15 px at 96 DPI), `indicator_labels`;
+  tray toggle. It runs on its own thread; the hook only posts messages to it. Layout changes made outside CapsLangChange are not shown.
+- Settings introduced after the first release (`config::ADDED_SETTINGS`) are added to an existing file on start,
+  with the comments of the default configuration (`toml_edit`, the rest of the file unchanged).
 
 ## 15. Possible later additions
 

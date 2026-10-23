@@ -4,8 +4,9 @@
 
 - Language indicator: after a binding switches the layout, a small capsule next to the text cursor (or the mouse
   pointer) shows the new language, for example `EN` or `RU`. It stays while the key is held and fades out shortly
-  after. Settings `indicator`, `indicator_position`, `indicator_duration_ms` and `indicator_labels`; tray menu item
-  **Show the language after switching**.
+  after. Settings `indicator`, `indicator_position`, `indicator_duration_ms`, `indicator_height` and
+  `indicator_labels`; tray menu item **Show the language after switching**.
+- Settings added by a new version are written into an existing configuration file (with their comments) on start.
 
 ## 0.2.0
 

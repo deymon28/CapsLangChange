@@ -164,6 +164,20 @@ fn real_main() -> i32 {
     if created {
         log::info!("main", "created the default configuration at {}", config_path.display());
     }
+    // Settings introduced by a newer version are written into the file, so they can be found and changed there.
+    let text = match config::add_missing_settings(&text) {
+        Some(updated) => match config::write_atomic(&config_path, &updated) {
+            Ok(()) => {
+                log::info!("main", "added new settings to {}", config_path.display());
+                updated
+            }
+            Err(e) => {
+                log::warning!("main", "cannot add new settings to {}: {e}", config_path.display());
+                text
+            }
+        },
+        None => text,
+    };
     let config = match layout::parse_config(&text) {
         Ok(c) => c,
         Err(errors) => {

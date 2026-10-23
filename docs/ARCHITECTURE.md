@@ -77,7 +77,8 @@ so the hook stays fast. The indicator thread:
    the capsule appears once the layout differs from the one before the switch, or after 300 ms.
 3. draws the capsule into a premultiplied 32-bit bitmap (signed-distance antialiasing, shadow, grayscale text
    centred on its ink) and shows it with `UpdateLayeredWindow` (`WS_EX_LAYERED | WS_EX_TRANSPARENT |
-   WS_EX_NOACTIVATE | WS_EX_TOPMOST`), scaled to the monitor's DPI and kept inside its work area.
+   WS_EX_NOACTIVATE | WS_EX_TOPMOST`), sized from `indicator_height`, scaled to the monitor's DPI and kept inside
+   its work area.
 4. hides it after the configured duration, counted from the switch and from the key release, with a short fade. If
    no auto-repeat arrives for 2 seconds while the key is "held", the release counts as missed.
 
